@@ -450,6 +450,8 @@ static int fuse_mount_sys(const char *mnt, struct mount_opts *mo,
 {
 	char tmp[128];
 	const char *devname = "/dev/fuse";
+	const char *devnamedaos = "/dev/daos";
+	char use_daos = 0;
 	char *source = NULL;
 	char *type = NULL;
 	struct stat stbuf;
@@ -468,15 +470,24 @@ static int fuse_mount_sys(const char *mnt, struct mount_opts *mo,
 		return -1;
 	}
 
-	fd = open(devname, O_RDWR | O_CLOEXEC);
+	fd = open(devnamedaos, O_RDWR | O_CLOEXEC);
 	if (fd == -1) {
-		if (errno == ENODEV || errno == ENOENT)
-			fuse_log(FUSE_LOG_ERR, "fuse: device not found, try 'modprobe fuse' first\n");
-		else
-			fuse_log(FUSE_LOG_ERR, "fuse: failed to open %s: %s\n",
-				devname, strerror(errno));
-		return -1;
+		fuse_log(FUSE_LOG_ERR, "fuse: daos device not found, using legacy fuse\n");
+
+		fd = open(devname, O_RDWR | O_CLOEXEC);
+		if (fd == -1) {
+			if (errno == ENODEV || errno == ENOENT)
+				fuse_log(FUSE_LOG_ERR, "fuse: device not found, try 'modprobe fuse' first\n");
+			else
+				fuse_log(FUSE_LOG_ERR, "fuse: failed to open %s: %s\n",
+						devname, strerror(errno));
+			return -1;
+		}
+	} else {
+		devname = devnamedaos;
+		use_daos = 1;
 	}
+
 	if (!O_CLOEXEC)
 		fcntl(fd, F_SETFD, FD_CLOEXEC);
 
@@ -497,7 +508,7 @@ static int fuse_mount_sys(const char *mnt, struct mount_opts *mo,
 		goto out_close;
 	}
 
-	strcpy(type, mo->blkdev ? "fuseblk" : "fuse");
+	strcpy(type, mo->blkdev ? "fuseblk" : use_daos ? "daos" : "fuse");
 	if (mo->subtype) {
 		strcat(type, ".");
 		strcat(type, mo->subtype);
@@ -508,7 +519,7 @@ static int fuse_mount_sys(const char *mnt, struct mount_opts *mo,
 	res = mount(source, mnt, type, mo->flags, mo->kernel_opts);
 	if (res == -1 && errno == ENODEV && mo->subtype) {
 		/* Probably missing subtype support */
-		strcpy(type, mo->blkdev ? "fuseblk" : "fuse");
+		strcpy(type, mo->blkdev ? "fuseblk" : use_daos ? "daos" : "fuse");
 		if (mo->fsname) {
 			if (!mo->blkdev)
 				sprintf(source, "%s#%s", mo->subtype,
@@ -541,12 +552,12 @@ static int fuse_mount_sys(const char *mnt, struct mount_opts *mo,
 
 #ifndef IGNORE_MTAB
 	if (geteuid() == 0) {
-		char *newmnt = fuse_mnt_resolve_path("fuse", mnt);
+		char *newmnt = fuse_mnt_resolve_path(use_daos ? "daos" : "fuse", mnt);
 		res = -1;
 		if (!newmnt)
 			goto out_umount;
 
-		res = fuse_mnt_add_mount("fuse", source, newmnt, type,
+		res = fuse_mnt_add_mount(use_daos ? "daos" : "fuse", source, newmnt, type,
 					 mnt_opts);
 		free(newmnt);
 		if (res == -1)
